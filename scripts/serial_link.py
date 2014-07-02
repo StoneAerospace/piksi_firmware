@@ -117,6 +117,7 @@ class SerialLink:
       import serial
       try:
         self.ser = serial.Serial(port, baud, timeout=1)
+        print "Opened serial device '%s'" % port 
       except serial.SerialException:
         print
         print "Serial device '%s' not found" % port
@@ -207,6 +208,7 @@ class SerialLink:
       self.callbacks[msg_type].append(callback)
     except KeyError:
       self.callbacks[msg_type] = [callback]
+    print "Added callback '%s' for msg 0x%04x" % (callback.__name__, msg_type)
 
   def rm_callback(self, msg_type, callback):
     try:

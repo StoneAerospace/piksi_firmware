@@ -210,6 +210,7 @@ class SwiftConsole(HasTraits):
   def stop(self):
     self.link.close()
 
+
 class PortChooser(HasTraits):
   ports = List()
   port = Str(None)
@@ -235,8 +236,8 @@ if serial_port is None:
     print "No serial device selected!"
     import sys
     sys.exit(1)
-  else:
-    print "Using serial device '%s'" % serial_port
+else:
+  print "Using serial device '%s'" % serial_port
 
 console = SwiftConsole(serial_port, baud, use_ftdi=args.ftdi,
                        print_unhandled=args.verbose, update=args.update)

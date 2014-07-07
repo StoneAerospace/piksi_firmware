@@ -67,11 +67,10 @@ def crc16(s, crc=0):
 
 class ListenerThread (threading.Thread):
 
-  def __init__(self, link, print_unhandled=False):
+  def __init__(self, link):
     super(ListenerThread, self).__init__()
     self.link = link
     self.wants_to_stop = False
-    self.print_unhandled = print_unhandled
 
   def stop(self):
     self.wants_to_stop = True
@@ -79,22 +78,12 @@ class ListenerThread (threading.Thread):
   def run(self):
     while not self.wants_to_stop:
       try:
-        mt, ms, md = self.link.get_message()
+        self.link.read_message()
         if self.wants_to_stop: #will throw away last message here even if it is valid
           if self.link.ser:
             self.link.ser.close()
           break
-        if mt is not None:
-          cbs = self.link.get_callback(mt)
-          if cbs is None or len(cbs) == 0:
-            if self.print_unhandled:
-              print "Host Side Unhandled message %02X" % mt
-          else:
-            for cb in cbs:
-              try:
-                cb(md, sender=ms)
-              except TypeError:
-                cb(md)
+        self.link.process_message()
       except Exception, err:
         import traceback
         print traceback.format_exc()
@@ -136,7 +125,7 @@ class SerialLink:
     time.sleep(0.5)
     self.ser.flush()
 
-    self.lt = ListenerThread(self, print_unhandled)
+    self.lt = ListenerThread(self)
     self.lt.start()
 
   def __del__(self):
@@ -148,12 +137,12 @@ class SerialLink:
     except AttributeError:
       pass
 
-  def get_message(self):
+  def read_message(self):
+
+    # Sync with magic start bytes
     while True:
       if self.lt.wants_to_stop:
         return (None, None, None)
-
-      # Sync with magic start bytes
       try:
         magic = self.ser.read(1)
       except OSError:
@@ -188,22 +177,46 @@ class SerialLink:
 
     if crc != crc_received:
       print "Host Side CRC mismatch: 0x%04X 0x%04X" % (crc, crc_received)
-      return (None, None, None)
+      self.received_message = (None, None, None)
+    else:
+      self.received_message = (msg_type, sender_id, data)
 
-    return (msg_type, sender_id, data)
+  def process_message(self):
+    mt, ms, md = self.received_message
+    if mt is not None:
+      callbacks = self.get_callbacks(mt)
+      if callbacks is None or len(callbacks) == 0:
+        if self.print_unhandled:
+          print "Host Side Unhandled message %02X" % mt
+      else:
+        for callback in callbacks:
+          try:
+            callback(md, sender=ms)
+          except TypeError:
+            callback(md)
 
-  def send_message(self, msg_type, msg, sender_id=0x42):
+  def frame_message(self, msg_type, msg, sender_id=0x42):
     framed_msg = struct.pack('<BHHB', SBP_PREAMBLE, msg_type, sender_id, len(msg))
     framed_msg += msg
     crc = crc16(framed_msg[1:], 0)
     framed_msg += struct.pack('<H', crc)
+    return framed_msg
 
-    self.ser.write(framed_msg)
+  def send_message(self, msg_type, msg, sender_id=0x42):
+    self.ser.write(self.frame_message(msg_type, msg, sender_id))
 
   def send_char(self, char):
     self.ser.write(char)
 
   def add_callback(self, msg_type, callback):
+    """
+    Add a callback function to process incoming SBP messages. The
+    callback will be added to the list of callbacks for the given
+    message type.
+    @param msg_type (int): SBP message type word
+    @param callback (function(data)): callback function to respond to
+    incoming messages. 
+    """
     try:
       self.callbacks[msg_type].append(callback)
     except KeyError:
@@ -211,6 +224,12 @@ class SerialLink:
     print "Added callback '%s' for msg 0x%04x" % (callback.__name__, msg_type)
 
   def rm_callback(self, msg_type, callback):
+    """
+    Remove a callback function from processing incoming SBP messages.
+    @param msg_type (int): SBP message type word
+    @param callback (function(data)): callback function to remove from
+    messages' callback list
+    """
     try:
       self.callbacks[msg_type].remove(callback)
     except KeyError:
@@ -220,7 +239,7 @@ class SerialLink:
       print "Can't remove callback for msg 0x%04x: callback not registered" \
             % msg_type
 
-  def get_callback(self, msg_type):
+  def get_callbacks(self, msg_type):
     if msg_type in self.callbacks:
       return self.callbacks[msg_type]
     else:

@@ -84,9 +84,14 @@ class ListenerThread (threading.Thread):
             self.link.ser.close()
           break
         self.link.process_message()
-      except Exception, err:
+      except Exception as err:
         import traceback
         print traceback.format_exc()
+        # kludgy check for serious faults while trying to remain
+        # neutral between pylibftdi and serial 
+        if err.__class__.__name__ == "SerialException":
+          self.wants_to_stop = True
+          print "Stopping serial link."
 
 def list_ports(self=None):
   import serial.tools.list_ports

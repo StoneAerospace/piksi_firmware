@@ -48,16 +48,39 @@ class Bootloader():
       self.version = data[:]
     self.handshake_received = True
 
-  def wait_for_handshake(self):
+  def wait_for_handshake(self, timeout=None):
+    if timeout is not None:
+      t0 = time.time()
     self.handshake_received = False
     while not self.handshake_received:
       time.sleep(0.1)
+      if timeout is not None:
+        if time.time()-timeout > t0:
+          return False
+    return True
 
   def reply_handshake(self):
     self.link.send_message(ids.BOOTLOADER_HANDSHAKE, '\x00')
 
   def jump_to_app(self):
     self.link.send_message(ids.BOOTLOADER_JUMP_TO_APP, '\x00')
+
+WAIT_TIME = 0.01
+
+# Prints repeating " ..."
+def pretty_wait_print():
+  SECS_4_3 = int((4.0/3)/WAIT_TIME)
+  SECS_1_3 = int((1.0/3)/WAIT_TIME)
+
+  print ' ' + chr(3), # Clear line.
+  print "\rWaiting for device '%s' to be plugged in " % serial_port,
+  for i in range(pretty_wait_print.count-SECS_1_3, 0, -SECS_1_3):
+    sys.stdout.write('.')
+  sys.stdout.flush()
+
+  pretty_wait_print.count = (pretty_wait_print.count + 1) % (SECS_4_3-1)
+
+pretty_wait_print.count = -1
 
 if __name__ == "__main__":
   import argparse
@@ -74,6 +97,9 @@ if __name__ == "__main__":
                       action="store_true")
   parser.add_argument('-s', '--stm',
                       help='write the file to the STM flash.',
+                      action="store_true")
+  parser.add_argument('-e', '--erase',
+                      help='erase sectors 1-11 of the STM flash.',
                       action="store_true")
   parser.add_argument('-p', '--port',
                       default=[serial_link.DEFAULT_PORT], nargs=1,
@@ -93,65 +119,87 @@ if __name__ == "__main__":
   elif not args.stm and not args.m25:
     parser.error("One of -s or -m options must be chosen")
     sys.exit(2)
+  if args.erase and not args.stm:
+    parser.error("The -e option requires the -s option to also be chosen")
   ihx = IntelHex(args.file)
 
-  # Create serial link with device
-  print "Waiting for device to be plugged in ...",
-  sys.stdout.flush()
-  found_device = False
-  while not found_device:
+  # Create serial link with device.
+  link = None
+  while not link:
     try:
       link = serial_link.SerialLink(serial_port, baud=baud, use_ftdi=args.ftdi,
                                     print_unhandled = False)
-      found_device = True
     except KeyboardInterrupt:
-      # Clean up and exit
-      link.close()
+      if link:
+        link.close()
       sys.exit()
+    except OSError:
+      # No device with name serial_port found.
+      pretty_wait_print()
+      time.sleep(WAIT_TIME)
     except:
-      # Couldn't find device
-      time.sleep(0.01)
-  print "link successfully created."
-  link.add_callback(ids.PRINT, serial_link.default_print_callback)
+      import traceback
+      traceback.print_exc()
+      sys.exit()
+  if pretty_wait_print.count >= 0:
+    print
+  print "Link successfully created with device: '%s'." % serial_port
 
-  # Reset device if the payload is running
+  # Reset device if the payload is running.
   link.send_message(ids.RESET, '')
 
-  # Tell Bootloader we want to change flash data
+  # Add print callback.
+  time.sleep(0.2)
+  link.add_callback(ids.PRINT, serial_link.default_print_callback)
+
+  # Tell Bootloader we want to write to the flash.
   piksi_bootloader = Bootloader(link)
   print "Waiting for bootloader handshake message from Piksi ...",
   sys.stdout.flush()
   try:
     piksi_bootloader.wait_for_handshake()
   except KeyboardInterrupt:
-    # Clean up and exit
+    # Clean up and exit.
+    piksi_bootloader.stop()
     link.close()
     sys.exit()
   piksi_bootloader.reply_handshake()
   print "received."
   print "Piksi Onboard Bootloader Version:", piksi_bootloader.version
 
-  if args.stm:
-    piksi_flash = flash.Flash(link, flash_type="STM")
-  elif args.m25:
-    piksi_flash = flash.Flash(link, flash_type="M25")
-
-  piksi_flash.write_ihx(ihx, sys.stdout, mod_print = 0x10)
-
-  print "Bootloader jumping to application"
-  piksi_bootloader.jump_to_app()
-
-  piksi_flash.stop()
-  piksi_bootloader.stop()
-
-  # Wait for ctrl+C until we exit
+  # Catch all other errors and exit cleanly.
   try:
-    while(1):
-      time.sleep(0.5)
-  except KeyboardInterrupt:
-    pass
+    if args.stm:
+      piksi_flash = flash.Flash(link, flash_type="STM")
+    elif args.m25:
+      piksi_flash = flash.Flash(link, flash_type="M25")
 
-  # Clean up and exit
-  link.close()
-  sys.exit()
+    if args.erase:
+      for s in range(1,12):
+        print "\rErasing STM Sector", s,
+        sys.stdout.flush()
+        piksi_flash.erase_sector(s)
+      print
+
+    piksi_flash.write_ihx(ihx, sys.stdout, mod_print = 0x10)
+
+    print "Bootloader jumping to application"
+    piksi_bootloader.jump_to_app()
+
+    piksi_flash.stop()
+    piksi_bootloader.stop()
+  except:
+    import traceback
+    traceback.print_exc()
+  finally:
+    # Clean up and exit.
+    if not piksi_bootloader.stopped:
+      piksi_bootloader.stop()
+    try:
+      if not piksi_flash.stopped:
+        piksi_flash.stop()
+    except NameError:
+      pass
+    link.close()
+    sys.exit()
 

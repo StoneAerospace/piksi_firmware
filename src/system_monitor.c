@@ -16,6 +16,7 @@
 #include <ch.h>
 
 #include <libswiftnav/sbp_messages.h>
+#include <libswiftnav/dgnss_management.h>
 
 #include "board/nap/nap_common.h"
 #include "board/leds.h"
@@ -27,8 +28,14 @@
 #include "system_monitor.h"
 
 
+
 /* Time between sending system monitor and heartbeat messages in milliseconds */
 uint32_t heartbeat_period_milliseconds = 1000;
+
+/* Base station mode settings. */
+/* TODO: Relocate to a different file? */
+bool_t base_station_mode = false;
+double base_llh[3];
 
 /* Global CPU time accumulator, used to measure thread CPU usage. */
 u64 g_ctime = 0;
@@ -105,6 +112,20 @@ static msg_t system_monitor_thread(void *arg)
 
     u32 status_flags = 0;
     sbp_send_msg(SBP_HEARTBEAT, sizeof(status_flags), (u8 *)&status_flags);
+
+    /* If we are in base station mode then broadcast our known location. */
+    if (base_station_mode) {
+      sbp_send_msg(MSG_BASE_POS, sizeof(msg_base_pos_t), (u8 *)&base_llh);
+    }
+
+    msg_iar_state_t iar_state;
+    if (simulation_enabled_for(SIMULATION_MODE_RTK)) {
+      iar_state.num_hyps = 1;
+    } else {
+      iar_state.num_hyps = dgnss_iar_num_hyps();
+    }
+    sbp_send_msg(MSG_IAR_STATE, sizeof(msg_iar_state_t), (u8 *)&iar_state);
+
     send_thread_states();
 
     u32 err = nap_error_rd_blocking();
@@ -123,6 +144,11 @@ void system_monitor_setup()
   DWT_CTRL |= 1 ; /* Enable the counter. */
 
   SETTING("system_monitor", "heartbeat_period_milliseconds", heartbeat_period_milliseconds, TYPE_INT);
+
+  SETTING("base_station_mode", "enable", base_station_mode, TYPE_BOOL);
+  SETTING("base_station_mode", "surveyed lat", base_llh[0], TYPE_FLOAT);
+  SETTING("base_station_mode", "surveyed lon", base_llh[1], TYPE_FLOAT);
+  SETTING("base_station_mode", "surveyed alt", base_llh[2], TYPE_FLOAT);
 
   chThdCreateStatic(
       wa_system_monitor_thread,

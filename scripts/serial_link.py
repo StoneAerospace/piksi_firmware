@@ -67,10 +67,12 @@ def crc16(s, crc=0):
 
 class ListenerThread (threading.Thread):
 
-  def __init__(self, link):
+  def __init__(self, link, print_unhandled=False):
     super(ListenerThread, self).__init__()
     self.link = link
     self.wants_to_stop = False
+    self.print_unhandled = print_unhandled
+    self.daemon = True
 
   def stop(self):
     self.wants_to_stop = True
@@ -84,6 +86,10 @@ class ListenerThread (threading.Thread):
             self.link.ser.close()
           break
         self.link.process_message()
+      except (IOError, OSError):
+        # Piksi was disconnected
+        print "ERROR: Piksi disconnected!"
+        return
       except Exception as err:
         import traceback
         print traceback.format_exc()
@@ -95,7 +101,13 @@ class ListenerThread (threading.Thread):
 
 def list_ports(self=None):
   import serial.tools.list_ports
-  return serial.tools.list_ports.comports()
+  ports = serial.tools.list_ports.comports()
+  # Remove ports matching "ttyS*" (non-virtual serial ports on Linux).
+  ports = filter(lambda x: x[1][0:4] != "ttyS", ports)
+  if not any(ports):
+    return None
+  else:
+    return ports
 
 class SerialLink:
 
@@ -130,7 +142,7 @@ class SerialLink:
     time.sleep(0.5)
     self.ser.flush()
 
-    self.lt = ListenerThread(self)
+    self.lt = ListenerThread(self, print_unhandled)
     self.lt.start()
 
   def __del__(self):
@@ -139,6 +151,8 @@ class SerialLink:
   def close(self):
     try:
       self.lt.stop()
+      while self.lt.isAlive():
+        time.sleep(0.1)
     except AttributeError:
       pass
 
@@ -148,11 +162,9 @@ class SerialLink:
     while True:
       if self.lt.wants_to_stop:
         return (None, None, None)
-      try:
-        magic = self.ser.read(1)
-      except OSError:
-        print "Error: Piksi not connected"
-        sys.exit(1)
+
+      # Sync with magic start bytes
+      magic = self.ser.read(1)
       if magic:
         if ord(magic) == SBP_PREAMBLE:
           break
@@ -249,6 +261,17 @@ class SerialLink:
       return self.callbacks[msg_type]
     else:
       return None
+
+  def wait_message(self, msg_type, timeout=None):
+    ev = threading.Event()
+    d = {'data': None}
+    def cb(data):
+      d['data'] = data
+      ev.set()
+    self.add_callback(msg_type, cb)
+    ev.wait(timeout)
+    self.rm_callback(msg_type, cb)
+    return d['data']
 
 def default_print_callback(data):
   sys.stdout.write(data)

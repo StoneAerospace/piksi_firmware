@@ -201,6 +201,7 @@ class SerialLink:
   def process_message(self):
     mt, ms, md = self.received_message
     if mt is not None:
+      #print "Processing 0x%x" % mt, ms, md
       callbacks = self.get_callbacks(mt)
       if callbacks is None or len(callbacks) == 0:
         if self.print_unhandled:
@@ -220,6 +221,7 @@ class SerialLink:
     return framed_msg
 
   def send_message(self, msg_type, msg, sender_id=0x42):
+    #print "Sending ", msg_type, msg
     self.ser.write(self.frame_message(msg_type, msg, sender_id))
 
   def send_char(self, char):
